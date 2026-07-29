@@ -34,38 +34,52 @@ class HistoryBulanController extends Controller
         $permintaan = $query->with('detailPermintaan.barang.kategori', 'unitKerja')->get();
 
         // Group and transform data
-        $groupedPermintaan = $permintaan->flatMap(function ($item) {
-            return $item->detailPermintaan->map(function ($detail) use ($item) {
-                return [
-                    'bulan' => \Carbon\Carbon::parse($item->tanggal_permintaan)->translatedFormat('F Y'),
-                    'unit_kerja' => $item->unitKerja->nama_unit_kerja,
-                    'kode_barang' => $detail->barang->kategori->kode_barang,
-                    'nama_barang' => $detail->barang->nama_barang,
-                    'spesifikasi_nama_barang' => $detail->barang->spesifikasi_nama_barang,
-                    'total_permintaan' => (int) $detail->jumlah_permintaan,
-                    'jumlah' => $detail->barang->jumlah,
-                    'satuan' => $detail->barang->satuan,
-                    'keperluan' => $item->keperluan,
-                ];
-            });
-        })->groupBy(function ($item) {
-            return $item['unit_kerja'] . '-' . $item['bulan'] . '-' . $item['nama_barang'] . '-' . $item['spesifikasi_nama_barang'];
-        })->map(function ($group) {
-            $first = $group->first();
-            $first['total_permintaan'] = $group->sum(function ($item) {
-                return (int) $item['total_permintaan'];
-            });
-            return $first;
+        $allDetails = $permintaan->flatMap(function ($p) {
+            return $p->detailPermintaan;
         });
 
+        $groupedDetails = $allDetails->groupBy(function ($detail) {
+            $unitKerjaName = $detail->permintaan->unitKerja->nama_unit_kerja ?? 'N/A';
+            $bulan = \Carbon\Carbon::parse($detail->permintaan->tanggal_permintaan)->translatedFormat('F Y');
+            $namaBarang = optional($detail->barang)->nama_barang ?? 'N/A';
+            $specBarang = optional($detail->barang)->spesifikasi_nama_barang ?? 'N/A';
+            return $unitKerjaName . '-' . $bulan . '-' . $namaBarang . '-' . $specBarang;
+        });
+
+        $reportData = $groupedDetails->map(function ($group) {
+            $firstDetail = $group->first();
+            $totalPermintaan = $group->sum('jumlah_permintaan');
+            $barang = optional($firstDetail->barang);
+            $permintaan = optional($firstDetail->permintaan);
+            $unitKerja = optional($permintaan->unitKerja);
+            $kategori = optional($barang->kategori);
+
+            return [
+                'bulan' => $permintaan->tanggal_permintaan ? \Carbon\Carbon::parse($permintaan->tanggal_permintaan)->translatedFormat('F Y') : 'N/A',
+                'tanggal_permintaan_raw' => $permintaan->tanggal_permintaan, // Add this for sorting
+                'unit_kerja' => $unitKerja->nama_unit_kerja ?? 'N/A',
+                'kode_barang' => $kategori->kode_barang ?? 'N/A',
+                'nama_barang' => $barang->nama_barang ?? 'N/A',
+                'spesifikasi_nama_barang' => $barang->spesifikasi_nama_barang ?? 'N/A',
+                'total_permintaan' => $totalPermintaan,
+                'jumlah' => $barang->jumlah ?? 0,
+                'satuan' => $barang->satuan ?? 'N/A',
+                'keperluan' => $permintaan->keperluan ?? 'N/A',
+            ];
+        });
+
+        // Sort the report data by 'tanggal_permintaan_raw' in descending order (newest first)
+        $reportData = $reportData->sortByDesc('tanggal_permintaan_raw')->values();
+
         return view('laporan.bulan', [
-            'permintaan' => $groupedPermintaan,
+            'permintaan' => $reportData,
             'unitKerjaOptions' => UnitKerja::all(),
         ]);
     }
 
     public function exportToWord(Request $request)
     {
+        $htmlFlags = ENT_XML1 | ENT_QUOTES;
         // path ke template
         $templatePath = public_path('templates/template_surat_permintaan_barang.docx');
 
@@ -103,9 +117,9 @@ class HistoryBulanController extends Controller
         });
 
         // mengisi placeholder dengan data yang sudah difilter
-        $templateProcessor->setValue('unit_kerja', $permintaan->first()->unitKerja->nama_unit_kerja ?? 'Semua Unit Kerja');
-        $templateProcessor->setValue('bulan', $bulan);
-        $templateProcessor->setValue('tahun', $tahun);
+        $templateProcessor->setValue('unit_kerja', htmlspecialchars(optional($permintaan->first())->unitKerja->nama_unit_kerja ?? 'Semua Unit Kerja', $htmlFlags, 'UTF-8'));
+        $templateProcessor->setValue('bulan', htmlspecialchars($bulan, $htmlFlags, 'UTF-8'));
+        $templateProcessor->setValue('tahun', htmlspecialchars($tahun, $htmlFlags, 'UTF-8'));
 
         // menambahkan tanggal cetak
         $tanggalCetak = Carbon::now()->format('d-m-Y');
@@ -120,18 +134,18 @@ class HistoryBulanController extends Controller
             $sisa_persediaan = $stok_awal - $detail->jumlah_permintaan;
             $usulan_pengajuan_persetujuan = $detail->jumlah_permintaan;
 
-            $templateProcessor->setValue("no#{$index}", $index);
-            $templateProcessor->setValue("unit_kerja#{$index}", $detail->permintaan->unitKerja->nama_unit_kerja);
-            $templateProcessor->setValue("kode_barang#{$index}", $detail->barang->kategori->kode_barang);
-            $templateProcessor->setValue("nama_barang#{$index}", $detail->barang->nama_barang);
-            $templateProcessor->setValue("spesifikasi_nama_barang#{$index}", $detail->barang->spesifikasi_nama_barang);
-            $templateProcessor->setValue("total_permintaan#{$index}", $detail->jumlah_permintaan);
-            $templateProcessor->setValue("stok_awal#{$index}", $stok_awal);
+            $templateProcessor->setValue("no#{$index}", htmlspecialchars($index, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("unit_kerja#{$index}", htmlspecialchars($detail->permintaan->unitKerja->nama_unit_kerja, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("kode_barang#{$index}", htmlspecialchars($detail->barang->kategori->kode_barang, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("nama_barang#{$index}", htmlspecialchars($detail->barang->nama_barang, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("spesifikasi_nama_barang#{$index}", htmlspecialchars($detail->barang->spesifikasi_nama_barang, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("total_permintaan#{$index}", htmlspecialchars($detail->jumlah_permintaan, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("stok_awal#{$index}", htmlspecialchars($stok_awal, $htmlFlags, 'UTF-8'));
             // $templateProcessor->setValue("jumlah#{$index}", $detail->barang->jumlah);
-            $templateProcessor->setValue("jumlah#{$index}", $sisa_persediaan);
-            $templateProcessor->setValue("usulan_pengajuan_persetujuan#{$index}", $usulan_pengajuan_persetujuan);
-            $templateProcessor->setValue("satuan#{$index}", $detail->barang->satuan);
-            $templateProcessor->setValue("keperluan#{$index}", $detail->permintaan->keperluan);
+            $templateProcessor->setValue("jumlah#{$index}", htmlspecialchars($sisa_persediaan, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("usulan_pengajuan_persetujuan#{$index}", htmlspecialchars($usulan_pengajuan_persetujuan, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("satuan#{$index}", htmlspecialchars($detail->barang->satuan, $htmlFlags, 'UTF-8'));
+            $templateProcessor->setValue("keperluan#{$index}", htmlspecialchars($detail->permintaan->keperluan, $htmlFlags, 'UTF-8'));
         }
 
         // save file baru
@@ -140,4 +154,8 @@ class HistoryBulanController extends Controller
         $templateProcessor->saveAs($tempFilePath);
         return response()->download($tempFilePath)->deleteFileAfterSend(true);
     }
+
+
+
+    
 }
